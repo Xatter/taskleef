@@ -19,15 +19,71 @@ DIM='\033[2m'
 STRIKE='\033[9m'
 NC='\033[0m' # No Color
 
+# Load API key from auth file
+function load_auth_file() {
+    local auth_file="$1"
+
+    # Expand ~ to home directory
+    auth_file="${auth_file/#\~/$HOME}"
+
+    if [[ ! -f "$auth_file" ]]; then
+        echo -e "${RED}Error: Auth file not found: $auth_file${NC}" >&2
+        exit 1
+    fi
+
+    # Source the file to get TODO_API_KEY
+    source "$auth_file"
+
+    if [[ -z "$TODO_API_KEY" ]]; then
+        echo -e "${RED}Error: TODO_API_KEY not set in auth file${NC}" >&2
+        exit 1
+    fi
+
+    API_KEY="$TODO_API_KEY"
+}
+
+# Parse global flags (--auth-file / -a) before commands
+AUTH_FILE=""
+POSITIONAL_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --auth-file|-a)
+            if [[ -z "$2" || "$2" == -* ]]; then
+                echo -e "${RED}Error: --auth-file requires a path argument${NC}" >&2
+                exit 1
+            fi
+            AUTH_FILE="$2"
+            shift 2
+            ;;
+        *)
+            POSITIONAL_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+set -- "${POSITIONAL_ARGS[@]}"
+
+# Load auth file if specified
+if [[ -n "$AUTH_FILE" ]]; then
+    load_auth_file "$AUTH_FILE"
+fi
+
+# Check API key is set
 if [[ -z "$API_KEY" ]]; then
     echo -e "${RED}Error: TODO_API_KEY environment variable not set${NC}"
     echo "Generate an API key at $API_URL and set:"
     echo "  export TODO_API_KEY=your-api-key"
+    echo ""
+    echo "Or use --auth-file to specify an auth file:"
+    echo "  todo --auth-file ~/.todo.claude.auth <command>"
     exit 1
 fi
 
 function usage() {
-    echo "Usage: todo <command> [args]"
+    echo "Usage: todo [--auth-file <path>] <command> [args]"
+    echo ""
+    echo "Global Options:"
+    echo "  --auth-file, -a <path>    Load API key from auth file"
     echo ""
     echo "Todo Commands:"
     echo "  add <title>          Create a new todo"
@@ -43,6 +99,16 @@ function usage() {
     echo "Subtask Commands:"
     echo "  subtask <parent> <title>          Add a subtask to a todo"
     echo ""
+    echo "Board Commands:"
+    echo "  board                             Show default board (ASCII view)"
+    echo "  board list                        List all accessible boards"
+    echo "  board show [board]                Show board with columns and cards"
+    echo "  board column <column>             List cards in a column"
+    echo "  board move <card> <column>        Move card to column"
+    echo "  board done <card>                 Mark card done in current column"
+    echo "  board assign <card>               Assign card to current user"
+    echo "  board clear <column>              Delete all cards in column"
+    echo ""
     echo "Project Commands:"
     echo "  project list                      List all projects"
     echo "  project add <title>               Create a new project"
@@ -54,13 +120,16 @@ function usage() {
     echo "Arguments:"
     echo "  <todo>      Todo title (partial match) or ID prefix"
     echo "  <project>   Project title (partial match) or ID prefix"
+    echo "  <board>     Board title (partial match) or ID prefix"
+    echo "  <column>    Column title (partial match) or ID prefix"
+    echo "  <card>      Card's todo title (partial match) or ID prefix"
     echo ""
     echo "Tab Completion:"
     echo "  Bash: source /path/to/cli/todo-completion.bash"
     echo "  Zsh:  source /path/to/cli/todo-completion.zsh"
     echo ""
     echo "Environment:"
-    echo "  TODO_API_KEY      Your API key (required)"
+    echo "  TODO_API_KEY      Your API key (required unless using --auth-file)"
     echo "  TODO_API_URL      API URL (default: https://todo.extroverteddeveloper.com)"
 }
 
@@ -132,6 +201,140 @@ function find_todo_id() {
         echo "$title_match"
         return 0
     fi
+
+    return 1
+}
+
+# Get current user ID from API profile
+function get_current_user_id() {
+    local response
+    response=$(api_call GET "/api/profile")
+
+    if echo "$response" | jq -e '.id' > /dev/null 2>&1; then
+        echo "$response" | jq -r '.id'
+        return 0
+    fi
+    return 1
+}
+
+# Find board ID by prefix or title (case-insensitive partial match)
+# Returns first board if no query provided
+function find_board_id() {
+    local query="$1"
+    local boards
+    boards=$(api_call GET "/api/boards")
+
+    # If no query, return first board (default)
+    if [[ -z "$query" ]]; then
+        local first_id
+        first_id=$(echo "$boards" | jq -r '.[0].id // empty')
+        if [[ -n "$first_id" ]]; then
+            echo "$first_id"
+            return 0
+        fi
+        return 1
+    fi
+
+    # First try ID prefix match
+    local id_match
+    id_match=$(echo "$boards" | jq -r --arg prefix "$query" '.[] | select(.id | startswith($prefix)) | .id' | head -1)
+
+    if [[ -n "$id_match" ]]; then
+        echo "$id_match"
+        return 0
+    fi
+
+    # Then try title match (case-insensitive, partial)
+    local title_match
+    title_match=$(echo "$boards" | jq -r --arg query "$query" '.[] | select(.title | ascii_downcase | contains($query | ascii_downcase)) | .id' | head -1)
+
+    if [[ -n "$title_match" ]]; then
+        echo "$title_match"
+        return 0
+    fi
+
+    return 1
+}
+
+# Find column ID by prefix or title within a board
+function find_column_id() {
+    local board_id="$1"
+    local query="$2"
+    local columns
+    columns=$(api_call GET "/api/boards/${board_id}/columns")
+
+    # First try ID prefix match
+    local id_match
+    id_match=$(echo "$columns" | jq -r --arg prefix "$query" '.[] | select(.id | startswith($prefix)) | .id' | head -1)
+
+    if [[ -n "$id_match" ]]; then
+        echo "$id_match"
+        return 0
+    fi
+
+    # Then try title match (case-insensitive, partial)
+    local title_match
+    title_match=$(echo "$columns" | jq -r --arg query "$query" '.[] | select(.title | ascii_downcase | contains($query | ascii_downcase)) | .id' | head -1)
+
+    if [[ -n "$title_match" ]]; then
+        echo "$title_match"
+        return 0
+    fi
+
+    return 1
+}
+
+# Find card by todo title or ID on a board
+# Returns: card_id|todo_id|column_id or empty if not found
+function find_card_by_todo() {
+    local board_id="$1"
+    local query="$2"
+    local columns
+    columns=$(api_call GET "/api/boards/${board_id}/columns")
+
+    # Iterate through columns to find matching card
+    local col_ids
+    col_ids=$(echo "$columns" | jq -r '.[].id')
+
+    for col_id in $col_ids; do
+        local cards
+        cards=$(api_call GET "/api/columns/${col_id}/cards")
+
+        local card_count
+        card_count=$(echo "$cards" | jq 'length')
+
+        if [[ "$card_count" -eq 0 ]]; then
+            continue
+        fi
+
+        # For each card, check if todo matches
+        local todo_ids
+        todo_ids=$(echo "$cards" | jq -r '.[].todoId')
+
+        for todo_id in $todo_ids; do
+            # Check ID prefix match first (faster)
+            if [[ "$todo_id" == "$query"* ]]; then
+                local card_id
+                card_id=$(echo "$cards" | jq -r --arg tid "$todo_id" '.[] | select(.todoId == $tid) | .id')
+                echo "${card_id}|${todo_id}|${col_id}"
+                return 0
+            fi
+
+            # Then check title match
+            local todo
+            todo=$(api_call GET "/api/todos/${todo_id}")
+            local title
+            title=$(echo "$todo" | jq -r '.title')
+
+            # Case-insensitive partial match
+            if echo "$title" | grep -qi "$query"; then
+                local card_id
+                card_id=$(echo "$cards" | jq -r --arg tid "$todo_id" '.[] | select(.todoId == $tid) | .id')
+                echo "${card_id}|${todo_id}|${col_id}"
+                return 0
+            fi
+        done
+    done
 
     return 1
 }
@@ -642,6 +845,425 @@ function project_remove_todo() {
     fi
 }
 
+# ==================== Board Commands ====================
+
+function board_list() {
+    local response
+    response=$(api_call GET "/api/boards")
+
+    if echo "$response" | jq -e 'type == "array"' > /dev/null 2>&1; then
+        local count
+        count=$(echo "$response" | jq 'length')
+
+        if [[ "$count" == "0" ]]; then
+            echo -e "${YELLOW}No boards found.${NC}"
+            return
+        fi
+
+        echo -e "${BLUE}Boards:${NC}"
+        echo ""
+        echo "$response" | jq -r '.[] | "\(.id | split("-")[0])\t\(.title)"' | while IFS=$'\t' read -r id title; do
+            echo -e "  ${id}  ${title}"
+        done
+    else
+        echo -e "${RED}Error: $response${NC}"
+    fi
+}
+
+function board_show() {
+    local board_query="$1"
+
+    local board_id
+    board_id=$(find_board_id "$board_query")
+    if [[ -z "$board_id" ]]; then
+        echo -e "${RED}Error: No board found${NC}"
+        exit 1
+    fi
+
+    # Get board info
+    local board
+    board=$(api_call GET "/api/boards/${board_id}")
+    local board_title
+    board_title=$(echo "$board" | jq -r '.title')
+
+    # Get columns
+    local columns
+    columns=$(api_call GET "/api/boards/${board_id}/columns")
+
+    echo -e "${BLUE}Board: ${board_title}${NC}"
+    echo ""
+
+    # Display columns with card counts
+    echo "$columns" | jq -r 'sort_by(.order) | .[] | "\(.id)\t\(.title)\t\(.wipLimit // "-")"' | while IFS=$'\t' read -r col_id col_title wip; do
+        local cards
+        cards=$(api_call GET "/api/columns/${col_id}/cards")
+
+        local inbox_count done_count blocked_count
+        inbox_count=$(echo "$cards" | jq '[.[] | select(.subColumn == "Inbox")] | length')
+        done_count=$(echo "$cards" | jq '[.[] | select(.subColumn == "Done")] | length')
+        blocked_count=$(echo "$cards" | jq '[.[] | select(.subColumn == "Blocked")] | length')
+
+        local wip_display=""
+        if [[ "$wip" != "-" && "$wip" != "null" ]]; then
+            if [[ "$inbox_count" -ge "$wip" ]]; then
+                wip_display=" ${RED}(${inbox_count}/${wip})${NC}"
+            else
+                wip_display=" ${DIM}(${inbox_count}/${wip})${NC}"
+            fi
+        fi
+
+        echo -e "  ${BLUE}${col_title}${NC}${wip_display}"
+        echo -e "    ${inbox_count} active, ${done_count} done, ${blocked_count} blocked"
+
+        # Show first 3 card titles (truncated) from Inbox
+        local inbox_todo_ids
+        inbox_todo_ids=$(echo "$cards" | jq -r '[.[] | select(.subColumn == "Inbox")] | .[0:3] | .[].todoId')
+
+        for todo_id in $inbox_todo_ids; do
+            if [[ -n "$todo_id" ]]; then
+                local todo
+                todo=$(api_call GET "/api/todos/${todo_id}")
+                local title
+                title=$(echo "$todo" | jq -r '.title')
+                # Truncate title to 40 chars
+                if [[ ${#title} -gt 40 ]]; then
+                    title="${title:0:37}..."
+                fi
+                echo -e "      ○ ${title}"
+            fi
+        done
+        echo ""
+    done
+}
+
+function board_column() {
+    local column_query="$1"
+
+    if [[ -z "$column_query" ]]; then
+        echo -e "${RED}Error: Column name or ID required${NC}"
+        echo "Usage: todo board column <column-name-or-id>"
+        exit 1
+    fi
+
+    local board_id
+    board_id=$(find_board_id "")
+    if [[ -z "$board_id" ]]; then
+        echo -e "${RED}Error: No accessible boards found${NC}"
+        exit 1
+    fi
+
+    local column_id
+    column_id=$(find_column_id "$board_id" "$column_query")
+    if [[ -z "$column_id" ]]; then
+        echo -e "${RED}Error: Column not found: $column_query${NC}"
+        exit 1
+    fi
+
+    # Get column info
+    local columns
+    columns=$(api_call GET "/api/boards/${board_id}/columns")
+    local column_title
+    column_title=$(echo "$columns" | jq -r --arg id "$column_id" '.[] | select(.id == $id) | .title')
+
+    # Get cards in column
+    local cards
+    cards=$(api_call GET "/api/columns/${column_id}/cards")
+
+    echo -e "${BLUE}$column_title:${NC}"
+    echo ""
+
+    if [[ $(echo "$cards" | jq 'length') -eq 0 ]]; then
+        echo -e "  ${DIM}(empty)${NC}"
+        return
+    fi
+
+    # Group by subColumn
+    for sub in "Inbox" "Blocked" "Done"; do
+        local sub_cards
+        sub_cards=$(echo "$cards" | jq -r --arg sub "$sub" '[.[] | select(.subColumn == $sub)]')
+        local count
+        count=$(echo "$sub_cards" | jq 'length')
+
+        if [[ "$count" -gt 0 ]]; then
+            local icon=""
+            case "$sub" in
+                "Inbox") icon="○" ;;
+                "Done") icon="${GREEN}✓${NC}" ;;
+                "Blocked") icon="${RED}⊗${NC}" ;;
+            esac
+
+            echo -e "  ${icon} ${sub} (${count}):"
+
+            local todo_ids
+            todo_ids=$(echo "$sub_cards" | jq -r '.[].todoId')
+            for todo_id in $todo_ids; do
+                local todo
+                todo=$(api_call GET "/api/todos/${todo_id}")
+                local title
+                title=$(echo "$todo" | jq -r '.title')
+                local short_id="${todo_id:0:8}"
+                echo -e "    ${DIM}${short_id}${NC}  ${title}"
+            done
+        fi
+    done
+}
+
+function board_move() {
+    local card_query="$1"
+    local column_query="$2"
+
+    if [[ -z "$card_query" || -z "$column_query" ]]; then
+        echo -e "${RED}Error: Card and column required${NC}"
+        echo "Usage: todo board move <card-title-or-id> <column-name-or-id>"
+        exit 1
+    fi
+
+    local board_id
+    board_id=$(find_board_id "")
+    if [[ -z "$board_id" ]]; then
+        echo -e "${RED}Error: No accessible boards found${NC}"
+        exit 1
+    fi
+
+    # Find the card
+    local card_info
+    card_info=$(find_card_by_todo "$board_id" "$card_query")
+    if [[ -z "$card_info" ]]; then
+        echo -e "${RED}Error: Card not found: $card_query${NC}"
+        exit 1
+    fi
+
+    local card_id todo_id current_col_id
+    IFS='|' read -r card_id todo_id current_col_id <<< "$card_info"
+
+    # Find target column
+    local target_col_id
+    target_col_id=$(find_column_id "$board_id" "$column_query")
+    if [[ -z "$target_col_id" ]]; then
+        echo -e "${RED}Error: Column not found: $column_query${NC}"
+        exit 1
+    fi
+
+    # Move the card
+    local json_body
+    json_body=$(jq -n --arg colId "$target_col_id" '{columnId: $colId, subColumn: "Inbox"}')
+    local response
+    response=$(api_call PUT "/api/cards/${card_id}" "$json_body")
+
+    if echo "$response" | jq -e '.id' > /dev/null 2>&1; then
+        local todo
+        todo=$(api_call GET "/api/todos/${todo_id}")
+        local title
+        title=$(echo "$todo" | jq -r '.title')
+
+        local columns
+        columns=$(api_call GET "/api/boards/${board_id}/columns")
+        local col_title
+        col_title=$(echo "$columns" | jq -r --arg id "$target_col_id" '.[] | select(.id == $id) | .title')
+
+        echo -e "${GREEN}Moved:${NC} $title -> $col_title"
+    else
+        echo -e "${RED}Error: $response${NC}"
+    fi
+}
+
+function board_done() {
+    local card_query="$1"
+
+    if [[ -z "$card_query" ]]; then
+        echo -e "${RED}Error: Card title or ID required${NC}"
+        echo "Usage: todo board done <card-title-or-id>"
+        exit 1
+    fi
+
+    local board_id
+    board_id=$(find_board_id "")
+    if [[ -z "$board_id" ]]; then
+        echo -e "${RED}Error: No accessible boards found${NC}"
+        exit 1
+    fi
+
+    # Find the card
+    local card_info
+    card_info=$(find_card_by_todo "$board_id" "$card_query")
+    if [[ -z "$card_info" ]]; then
+        echo -e "${RED}Error: Card not found: $card_query${NC}"
+        exit 1
+    fi
+
+    local card_id todo_id col_id
+    IFS='|' read -r card_id todo_id col_id <<< "$card_info"
+
+    # Move to Done subColumn
+    local json_body='{"subColumn": "Done"}'
+    local response
+    response=$(api_call PUT "/api/cards/${card_id}" "$json_body")
+
+    if echo "$response" | jq -e '.id' > /dev/null 2>&1; then
+        local todo
+        todo=$(api_call GET "/api/todos/${todo_id}")
+        local title
+        title=$(echo "$todo" | jq -r '.title')
+        echo -e "${GREEN}Done:${NC} $title"
+    else
+        echo -e "${RED}Error: $response${NC}"
+    fi
+}
+
+function board_assign() {
+    local card_query="$1"
+
+    if [[ -z "$card_query" ]]; then
+        echo -e "${RED}Error: Card title or ID required${NC}"
+        echo "Usage: todo board assign <card-title-or-id>"
+        exit 1
+    fi
+
+    # Get current user ID
+    local user_id
+    user_id=$(get_current_user_id)
+    if [[ -z "$user_id" ]]; then
+        echo -e "${RED}Error: Could not get current user ID${NC}"
+        exit 1
+    fi
+
+    local board_id
+    board_id=$(find_board_id "")
+    if [[ -z "$board_id" ]]; then
+        echo -e "${RED}Error: No accessible boards found${NC}"
+        exit 1
+    fi
+
+    # Find the card
+    local card_info
+    card_info=$(find_card_by_todo "$board_id" "$card_query")
+    if [[ -z "$card_info" ]]; then
+        echo -e "${RED}Error: Card not found: $card_query${NC}"
+        exit 1
+    fi
+
+    local card_id todo_id col_id
+    IFS='|' read -r card_id todo_id col_id <<< "$card_info"
+
+    # Get current todo data to preserve fields
+    local todo
+    todo=$(api_call GET "/api/todos/${todo_id}")
+    local title
+    title=$(echo "$todo" | jq -r '.title')
+
+    # Update todo with assignee
+    local json_body
+    json_body=$(echo "$todo" | jq --arg uid "$user_id" '{title: .title, description: .description, assigneeUserId: $uid}')
+    local response
+    response=$(api_call PUT "/api/todos/${todo_id}" "$json_body")
+
+    if echo "$response" | jq -e '.id' > /dev/null 2>&1; then
+        echo -e "${GREEN}Assigned:${NC} $title"
+    else
+        echo -e "${RED}Error: $response${NC}"
+    fi
+}
+
+function board_clear() {
+    local column_query="$1"
+
+    if [[ -z "$column_query" ]]; then
+        echo -e "${RED}Error: Column name or ID required${NC}"
+        echo "Usage: todo board clear <column-name-or-id>"
+        exit 1
+    fi
+
+    local board_id
+    board_id=$(find_board_id "")
+    if [[ -z "$board_id" ]]; then
+        echo -e "${RED}Error: No accessible boards found${NC}"
+        exit 1
+    fi
+
+    local column_id
+    column_id=$(find_column_id "$board_id" "$column_query")
+    if [[ -z "$column_id" ]]; then
+        echo -e "${RED}Error: Column not found: $column_query${NC}"
+        exit 1
+    fi
+
+    # Get column title for confirmation
+    local columns
+    columns=$(api_call GET "/api/boards/${board_id}/columns")
+    local col_title
+    col_title=$(echo "$columns" | jq -r --arg id "$column_id" '.[] | select(.id == $id) | .title')
+
+    # Get all cards in column
+    local cards
+    cards=$(api_call GET "/api/columns/${column_id}/cards")
+    local count
+    count=$(echo "$cards" | jq 'length')
+
+    if [[ "$count" -eq 0 ]]; then
+        echo -e "${YELLOW}Column '$col_title' is already empty${NC}"
+        return
+    fi
+
+    # Confirm before deleting
+    echo -e "${RED}Warning: This will delete $count cards from '$col_title'${NC}"
+    read -p "Are you sure? (y/N) " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo "Cancelled"
+        return
+    fi
+
+    # Delete each card
+    local deleted=0
+    local card_ids
+    card_ids=$(echo "$cards" | jq -r '.[].id')
+    for cid in $card_ids; do
+        api_call DELETE "/api/cards/${cid}" > /dev/null
+        ((deleted++))
+    done
+
+    echo -e "${GREEN}Deleted $deleted cards from $col_title${NC}"
+}
+
+function handle_board_command() {
+    local subcmd="$1"
+    shift
+
+    case "$subcmd" in
+        list|ls)
+            board_list
+            ;;
+        show)
+            board_show "$1"
+            ;;
+        column|col)
+            board_column "$1"
+            ;;
+        move|mv)
+            board_move "$1" "$2"
+            ;;
+        done)
+            board_done "$1"
+            ;;
+        assign)
+            board_assign "$1"
+            ;;
+        clear)
+            board_clear "$1"
+            ;;
+        "")
+            # Default: show board
+            board_show ""
+            ;;
+        *)
+            # If subcmd looks like a board name, show that board
+            board_show "$subcmd"
+            ;;
+    esac
+}
+
+# ==================== Project Commands ====================
+
 function handle_project_command() {
     local subcmd="$1"
     shift
@@ -709,6 +1331,10 @@ case "${1:-}" in
     project)
         shift
         handle_project_command "$@"
+        ;;
+    board)
+        shift
+        handle_board_command "$@"
         ;;
     help|--help|-h)
         usage

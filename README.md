@@ -43,6 +43,8 @@ sudo cp taskleef/todo /usr/local/bin/
 
 ## Configuration
 
+### Option 1: Environment Variable
+
 1. Go to [todo.extroverteddeveloper.com](https://todo.extroverteddeveloper.com) and generate an API key
 2. Set the `TODO_API_KEY` environment variable:
 
@@ -51,6 +53,21 @@ export TODO_API_KEY=your-api-key-here
 ```
 
 Add this to your `~/.bashrc` or `~/.zshrc` to make it permanent.
+
+### Option 2: Auth File
+
+Create an auth file (e.g., `~/.todo.auth`) containing:
+```bash
+TODO_API_KEY=your-api-key-here
+```
+
+Then use the `--auth-file` flag:
+```bash
+todo --auth-file ~/.todo.auth list
+todo -a ~/.todo.auth list
+```
+
+This is useful for managing multiple accounts or keeping credentials separate.
 
 ### Optional: Custom API URL
 
@@ -74,6 +91,13 @@ source /path/to/taskleef/todo-completion.zsh
 Add the appropriate line to your `~/.bashrc` or `~/.zshrc` to enable completion on startup.
 
 ## Usage
+
+### Global Options
+
+```bash
+todo [--auth-file <path>] <command> [args]
+todo [-a <path>] <command> [args]
+```
 
 ### Basic Commands
 
@@ -139,9 +163,37 @@ todo project add-todo <project-name-or-id> <todo-title-or-id>
 todo project remove-todo <project-name-or-id> <todo-title-or-id>
 ```
 
-## Finding Todos and Projects
+### Boards (Kanban)
 
-Commands that accept a todo or project identifier support:
+```bash
+# Show default board (ASCII view)
+todo board
+
+# List all accessible boards
+todo board list
+
+# Show a specific board with columns and cards
+todo board show <board-name-or-id>
+
+# List cards in a specific column
+todo board column <column-name-or-id>
+
+# Move a card to a different column
+todo board move <card-title-or-id> <column-name-or-id>
+
+# Mark a card as done in its current column
+todo board done <card-title-or-id>
+
+# Assign a card to the current user
+todo board assign <card-title-or-id>
+
+# Delete all cards in a column
+todo board clear <column-name-or-id>
+```
+
+## Finding Todos, Projects, and Boards
+
+Commands that accept an identifier support:
 
 - **ID prefix**: The first few characters of the UUID (e.g., `abc12`)
 - **Title match**: Partial, case-insensitive title match (e.g., `groceries` matches "Buy groceries")
@@ -170,6 +222,19 @@ Created project: Website Redesign (x7y8z)
 
 $ todo project add-todo "Website" "Fix login"
 Added todo to project: Website Redesign
+
+# View a kanban board
+$ todo board
+┌─────────────┬─────────────┬─────────────┐
+│ Backlog     │ In Progress │ Done        │
+├─────────────┼─────────────┼─────────────┤
+│ ○ Fix bug   │ ● Feature A │ ✓ Setup CI  │
+│ ○ Add tests │             │             │
+└─────────────┴─────────────┴─────────────┘
+
+# Move a card to a different column
+$ todo board move "Feature A" "Done"
+Moved: Feature A -> Done
 ```
 
 ## Priority Indicators
