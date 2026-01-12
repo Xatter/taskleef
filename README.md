@@ -1,0 +1,184 @@
+# Taskleef CLI
+
+A command-line interface for managing todos with the [Taskleef](https://todo.extroverteddeveloper.com) todo app.
+
+## Prerequisites
+
+- `curl` - for making API requests
+- `jq` - for parsing JSON responses
+
+### Installing jq
+
+**macOS:**
+```bash
+brew install jq
+```
+
+**Ubuntu/Debian:**
+```bash
+sudo apt-get install jq
+```
+
+## Installation
+
+### Option 1: Clone and add to PATH
+
+```bash
+git clone https://github.com/Xatter/taskleef.git
+cd taskleef
+chmod +x todo
+```
+
+Add to your PATH by adding this to your `~/.bashrc` or `~/.zshrc`:
+```bash
+export PATH="$PATH:/path/to/taskleef"
+```
+
+### Option 2: Copy to a directory in your PATH
+
+```bash
+git clone https://github.com/Xatter/taskleef.git
+sudo cp taskleef/todo /usr/local/bin/
+```
+
+## Configuration
+
+1. Go to [todo.extroverteddeveloper.com](https://todo.extroverteddeveloper.com) and generate an API key
+2. Set the `TODO_API_KEY` environment variable:
+
+```bash
+export TODO_API_KEY=your-api-key-here
+```
+
+Add this to your `~/.bashrc` or `~/.zshrc` to make it permanent.
+
+### Optional: Custom API URL
+
+If you're running your own Taskleef server, set:
+```bash
+export TODO_API_URL=https://your-server.com
+```
+
+## Tab Completion
+
+### Bash
+```bash
+source /path/to/taskleef/todo-completion.bash
+```
+
+### Zsh
+```bash
+source /path/to/taskleef/todo-completion.zsh
+```
+
+Add the appropriate line to your `~/.bashrc` or `~/.zshrc` to enable completion on startup.
+
+## Usage
+
+### Basic Commands
+
+```bash
+# List pending todos
+todo list
+todo ls
+
+# List all todos (including completed)
+todo list -a
+
+# Add a new todo
+todo add "Buy groceries"
+
+# Quick add (without 'add' keyword)
+todo "Buy groceries"
+
+# Show a todo with details and subtasks
+todo show <title-or-id>
+
+# Mark a todo as complete
+todo complete <title-or-id>
+todo done <title-or-id>
+
+# Delete a todo
+todo delete <title-or-id>
+todo rm <title-or-id>
+```
+
+### Inbox
+
+```bash
+# List todos not assigned to any project
+todo inbox
+```
+
+### Subtasks
+
+```bash
+# Add a subtask to a todo
+todo subtask <parent-title-or-id> "Subtask title"
+```
+
+### Projects
+
+```bash
+# List all projects
+todo project list
+
+# Create a new project
+todo project add "Project Name"
+
+# Show project with its todos
+todo project show <project-name-or-id>
+
+# Delete a project
+todo project delete <project-name-or-id>
+
+# Add a todo to a project
+todo project add-todo <project-name-or-id> <todo-title-or-id>
+
+# Remove a todo from a project
+todo project remove-todo <project-name-or-id> <todo-title-or-id>
+```
+
+## Finding Todos and Projects
+
+Commands that accept a todo or project identifier support:
+
+- **ID prefix**: The first few characters of the UUID (e.g., `abc12`)
+- **Title match**: Partial, case-insensitive title match (e.g., `groceries` matches "Buy groceries")
+
+## Examples
+
+```bash
+# Add a todo
+$ todo add "Review pull request"
+Created: Review pull request (a1b2c)
+
+# List todos
+$ todo ls
+Pending todos:
+
+  ○ a1b2c  Review pull request
+  ● d3e4f  2024-01-15  Fix login bug
+
+# Complete a todo by title
+$ todo done "pull request"
+Completed: Review pull request
+
+# Create a project and add todos
+$ todo project add "Website Redesign"
+Created project: Website Redesign (x7y8z)
+
+$ todo project add-todo "Website" "Fix login"
+Added todo to project: Website Redesign
+```
+
+## Priority Indicators
+
+- ○ No priority
+- ● (green) Low priority
+- ● (yellow) Medium priority
+- ● (red) High priority
+
+## License
+
+MIT

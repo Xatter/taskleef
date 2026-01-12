@@ -1,0 +1,723 @@
+#!/bin/bash
+
+# Todo CLI - Simple command line interface for todo.extroverteddeveloper.com
+# Usage:
+#   todo add "Buy milk"
+#   todo list
+#   todo complete <id>
+#   todo delete <id>
+
+API_URL="${TODO_API_URL:-https://todo.extroverteddeveloper.com}"
+API_KEY="${TODO_API_KEY}"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+DIM='\033[2m'
+STRIKE='\033[9m'
+NC='\033[0m' # No Color
+
+if [[ -z "$API_KEY" ]]; then
+    echo -e "${RED}Error: TODO_API_KEY environment variable not set${NC}"
+    echo "Generate an API key at $API_URL and set:"
+    echo "  export TODO_API_KEY=your-api-key"
+    exit 1
+fi
+
+function usage() {
+    echo "Usage: todo <command> [args]"
+    echo ""
+    echo "Todo Commands:"
+    echo "  add <title>          Create a new todo"
+    echo "  list [-a]            List pending todos (-a to include completed)"
+    echo "  ls [-a]              Alias for list"
+    echo "  inbox                List todos in inbox (not in any project)"
+    echo "  show <todo>          Show a todo with its subtasks"
+    echo "  complete <todo>      Mark a todo as complete"
+    echo "  done <todo>          Alias for complete"
+    echo "  delete <todo>        Delete a todo"
+    echo "  rm <todo>            Alias for delete"
+    echo ""
+    echo "Subtask Commands:"
+    echo "  subtask <parent> <title>          Add a subtask to a todo"
+    echo ""
+    echo "Project Commands:"
+    echo "  project list                      List all projects"
+    echo "  project add <title>               Create a new project"
+    echo "  project show <project>            Show project with its todos"
+    echo "  project delete <project>          Delete a project"
+    echo "  project add-todo <proj> <todo>    Add a todo to a project"
+    echo "  project remove-todo <proj> <todo> Remove a todo from a project"
+    echo ""
+    echo "Arguments:"
+    echo "  <todo>      Todo title (partial match) or ID prefix"
+    echo "  <project>   Project title (partial match) or ID prefix"
+    echo ""
+    echo "Tab Completion:"
+    echo "  Bash: source /path/to/cli/todo-completion.bash"
+    echo "  Zsh:  source /path/to/cli/todo-completion.zsh"
+    echo ""
+    echo "Environment:"
+    echo "  TODO_API_KEY      Your API key (required)"
+    echo "  TODO_API_URL      API URL (default: https://todo.extroverteddeveloper.com)"
+}
+
+function api_call() {
+    local method=$1
+    local endpoint=$2
+    local data=$3
+
+    if [[ -n "$data" ]]; then
+        curl -s -X "$method" \
+            -H "X-API-Key: $API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$data" \
+            "${API_URL}${endpoint}"
+    else
+        curl -s -X "$method" \
+            -H "X-API-Key: $API_KEY" \
+            "${API_URL}${endpoint}"
+    fi
+}
+
+# Find project ID by prefix or title (case-insensitive partial match)
+function find_project_id() {
+    local query="$1"
+    local projects
+    projects=$(api_call GET "/api/projects")
+
+    # First try ID prefix match
+    local id_match
+    id_match=$(echo "$projects" | jq -r --arg prefix "$query" '.[] | select(.id | startswith($prefix)) | .id' | head -1)
+
+    if [[ -n "$id_match" ]]; then
+        echo "$id_match"
+        return 0
+    fi
+
+    # Then try title match (case-insensitive, partial)
+    local title_match
+    title_match=$(echo "$projects" | jq -r --arg query "$query" '.[] | select(.title | ascii_downcase | contains($query | ascii_downcase)) | .id' | head -1)
+
+    if [[ -n "$title_match" ]]; then
+        echo "$title_match"
+        return 0
+    fi
+
+    return 1
+}
+
+# Find todo ID by prefix or title (case-insensitive partial match)
+function find_todo_id() {
+    local query="$1"
+    local todos
+    todos=$(api_call GET "/api/todos")
+
+    # First try ID prefix match
+    local id_match
+    id_match=$(echo "$todos" | jq -r --arg prefix "$query" '.[] | select(.id | startswith($prefix)) | .id' | head -1)
+
+    if [[ -n "$id_match" ]]; then
+        echo "$id_match"
+        return 0
+    fi
+
+    # Then try title match (case-insensitive, partial)
+    local title_match
+    title_match=$(echo "$todos" | jq -r --arg query "$query" '.[] | select(.title | ascii_downcase | contains($query | ascii_downcase)) | .id' | head -1)
+
+    if [[ -n "$title_match" ]]; then
+        echo "$title_match"
+        return 0
+    fi
+
+    return 1
+}
+
+function list_todos() {
+    local show_all="$1"
+    local response
+    response=$(api_call GET "/api/todos")
+
+    if echo "$response" | jq -e 'type == "array"' > /dev/null 2>&1; then
+        local pending_count completed_count
+        pending_count=$(echo "$response" | jq 'map(select(.isCompleted == false)) | length')
+        completed_count=$(echo "$response" | jq 'map(select(.isCompleted == true)) | length')
+
+        if [[ "$pending_count" == "0" && "$show_all" != "true" ]]; then
+            echo -e "${GREEN}No pending todos!${NC}"
+            if [[ "$completed_count" -gt 0 ]]; then
+                echo -e "${DIM}($completed_count completed - use 'todo list -a' to show)${NC}"
+            fi
+            return
+        fi
+
+        if [[ "$show_all" == "true" ]]; then
+            echo -e "${BLUE}All todos:${NC}"
+        else
+            echo -e "${BLUE}Pending todos:${NC}"
+        fi
+        echo ""
+
+        local filter_expr
+        if [[ "$show_all" == "true" ]]; then
+            filter_expr='sort_by(.isCompleted, .dueDate // "9999")'
+        else
+            filter_expr='map(select(.isCompleted == false)) | sort_by(.dueDate // "9999")'
+        fi
+
+        echo "$response" | jq -r "
+            ${filter_expr} |
+            .[] |
+            \"\(.id | split(\"-\")[0])\t\(.priority // \"-\")\t\(.dueDate // \"-\" | split(\"T\")[0])\t\(.isCompleted)\t\(.title)\"
+        " | while IFS=$'\t' read -r id priority due completed title; do
+            local priority_color=""
+            case $priority in
+                "High") priority_color="${RED}●${NC}" ;;
+                "Medium") priority_color="${YELLOW}●${NC}" ;;
+                "Low") priority_color="${GREEN}●${NC}" ;;
+                *) priority_color="○" ;;
+            esac
+
+            local status_icon="○"
+            local title_display="$title"
+            if [[ "$completed" == "true" ]]; then
+                status_icon="${GREEN}✓${NC}"
+                title_display="${DIM}${STRIKE}${title}${NC}"
+                priority_color="${DIM}○${NC}"
+            fi
+
+            if [[ "$due" != "-" && "$due" != "null" ]]; then
+                if [[ "$completed" == "true" ]]; then
+                    echo -e "  ${status_icon} ${DIM}${id}  ${due}${NC}  ${title_display}"
+                else
+                    echo -e "  ${priority_color} ${id}  ${due}  ${title_display}"
+                fi
+            else
+                if [[ "$completed" == "true" ]]; then
+                    echo -e "  ${status_icon} ${DIM}${id}${NC}  ${title_display}"
+                else
+                    echo -e "  ${priority_color} ${id}  ${title_display}"
+                fi
+            fi
+        done
+    else
+        echo -e "${RED}Error: $response${NC}"
+    fi
+}
+
+function add_todo() {
+    local title="$1"
+
+    if [[ -z "$title" ]]; then
+        echo -e "${RED}Error: Title is required${NC}"
+        echo "Usage: todo add \"Buy milk\""
+        exit 1
+    fi
+
+    local response
+    local json_body
+    json_body=$(jq -n --arg title "$title" '{title: $title}')
+    response=$(api_call POST "/api/todos" "$json_body")
+
+    if echo "$response" | jq -e '.id' > /dev/null 2>&1; then
+        local id
+        id=$(echo "$response" | jq -r '.id | split("-")[0]')
+        echo -e "${GREEN}Created:${NC} $title (${id})"
+    else
+        echo -e "${RED}Error: $response${NC}"
+    fi
+}
+
+function complete_todo() {
+    local query="$1"
+
+    if [[ -z "$query" ]]; then
+        echo -e "${RED}Error: Todo title or ID is required${NC}"
+        echo "Usage: todo complete <title-or-id>"
+        exit 1
+    fi
+
+    # Find the full ID (by prefix or title)
+    local full_id
+    full_id=$(find_todo_id "$query")
+
+    if [[ -z "$full_id" ]]; then
+        echo -e "${RED}Error: No todo found matching '$query'${NC}"
+        exit 1
+    fi
+
+    local response
+    response=$(api_call PATCH "/api/todos/${full_id}/complete")
+
+    if echo "$response" | jq -e '.completed' > /dev/null 2>&1; then
+        local title
+        title=$(echo "$response" | jq -r '.completed.title')
+        echo -e "${GREEN}Completed:${NC} $title"
+
+        # Check if a new todo was created (repeating)
+        if echo "$response" | jq -e '.next != null' > /dev/null 2>&1; then
+            local next_due
+            next_due=$(echo "$response" | jq -r '.next.dueDate // "-" | split("T")[0]')
+            echo -e "${BLUE}Next occurrence:${NC} $next_due"
+        fi
+    else
+        echo -e "${RED}Error: $response${NC}"
+    fi
+}
+
+function delete_todo() {
+    local query="$1"
+
+    if [[ -z "$query" ]]; then
+        echo -e "${RED}Error: Todo title or ID is required${NC}"
+        echo "Usage: todo delete <title-or-id>"
+        exit 1
+    fi
+
+    # Find the full ID (by prefix or title)
+    local full_id
+    full_id=$(find_todo_id "$query")
+
+    if [[ -z "$full_id" ]]; then
+        echo -e "${RED}Error: No todo found matching '$query'${NC}"
+        exit 1
+    fi
+
+    local response
+    response=$(api_call DELETE "/api/todos/${full_id}")
+
+    if echo "$response" | jq -e '.id' > /dev/null 2>&1; then
+        local title
+        title=$(echo "$response" | jq -r '.title')
+        echo -e "${RED}Deleted:${NC} $title"
+    else
+        echo -e "${RED}Error: $response${NC}"
+    fi
+}
+
+function show_todo() {
+    local query="$1"
+
+    if [[ -z "$query" ]]; then
+        echo -e "${RED}Error: Todo title or ID is required${NC}"
+        echo "Usage: todo show <title-or-id>"
+        exit 1
+    fi
+
+    # Find the full ID (by prefix or title)
+    local full_id
+    full_id=$(find_todo_id "$query")
+
+    if [[ -z "$full_id" ]]; then
+        echo -e "${RED}Error: No todo found matching '$query'${NC}"
+        exit 1
+    fi
+
+    local response
+    response=$(api_call GET "/api/todos/${full_id}")
+
+    if echo "$response" | jq -e '.id' > /dev/null 2>&1; then
+        local title priority due desc
+        title=$(echo "$response" | jq -r '.title')
+        priority=$(echo "$response" | jq -r '.priority // "-"')
+        due=$(echo "$response" | jq -r '.dueDate // "-" | split("T")[0]')
+        desc=$(echo "$response" | jq -r '.description // ""')
+
+        local priority_color=""
+        case $priority in
+            "High") priority_color="${RED}●${NC}" ;;
+            "Medium") priority_color="${YELLOW}●${NC}" ;;
+            "Low") priority_color="${GREEN}●${NC}" ;;
+            *) priority_color="○" ;;
+        esac
+
+        echo -e "${BLUE}$title${NC}"
+        if [[ -n "$desc" ]]; then
+            echo -e "   ${desc}"
+        fi
+        if [[ "$due" != "-" && "$due" != "null" ]]; then
+            echo -e "   Due: ${due}"
+        fi
+        echo ""
+
+        # Show subtasks
+        local subtask_count
+        subtask_count=$(echo "$response" | jq '.subtasks | length')
+
+        if [[ "$subtask_count" -gt 0 ]]; then
+            echo -e "   ${GREEN}Subtasks:${NC}"
+            echo "$response" | jq -r '.subtasks[] | "   ○ \(.id | split("-")[0])  \(.title)"'
+        fi
+    else
+        echo -e "${RED}Error: $response${NC}"
+    fi
+}
+
+function add_subtask() {
+    local parent_query="$1"
+    shift
+    local title="$*"
+
+    if [[ -z "$parent_query" ]]; then
+        echo -e "${RED}Error: Parent todo title or ID is required${NC}"
+        echo "Usage: todo subtask <parent-title-or-id> \"Subtask title\""
+        exit 1
+    fi
+
+    if [[ -z "$title" ]]; then
+        echo -e "${RED}Error: Subtask title is required${NC}"
+        echo "Usage: todo subtask <parent-title-or-id> \"Subtask title\""
+        exit 1
+    fi
+
+    # Find the full parent ID (by prefix or title)
+    local parent_id
+    parent_id=$(find_todo_id "$parent_query")
+
+    if [[ -z "$parent_id" ]]; then
+        echo -e "${RED}Error: No todo found matching '$parent_query'${NC}"
+        exit 1
+    fi
+
+    local response
+    local json_body
+    json_body=$(jq -n --arg title "$title" '{title: $title}')
+    response=$(api_call POST "/api/todos/${parent_id}/subtasks" "$json_body")
+
+    if echo "$response" | jq -e '.id' > /dev/null 2>&1; then
+        local id
+        id=$(echo "$response" | jq -r '.id | split("-")[0]')
+        echo -e "${GREEN}Created subtask:${NC} $title (${id})"
+    else
+        echo -e "${RED}Error: $response${NC}"
+    fi
+}
+
+function list_inbox() {
+    local response
+    response=$(api_call GET "/api/inbox")
+
+    if echo "$response" | jq -e 'type == "array"' > /dev/null 2>&1; then
+        local count
+        count=$(echo "$response" | jq 'length')
+
+        if [[ "$count" == "0" ]]; then
+            echo -e "${GREEN}Inbox is empty!${NC}"
+            return
+        fi
+
+        echo -e "${BLUE}Inbox:${NC}"
+        echo ""
+        echo "$response" | jq -r '
+            sort_by(.dueDate // "9999") |
+            .[] |
+            "\(.id | split("-")[0])\t\(.priority // "-")\t\(.dueDate // "-" | split("T")[0])\t\(.title)"
+        ' | while IFS=$'\t' read -r id priority due title; do
+            local priority_color=""
+            case $priority in
+                "High") priority_color="${RED}●${NC}" ;;
+                "Medium") priority_color="${YELLOW}●${NC}" ;;
+                "Low") priority_color="${GREEN}●${NC}" ;;
+                *) priority_color="○" ;;
+            esac
+
+            if [[ "$due" != "-" && "$due" != "null" ]]; then
+                echo -e "  ${priority_color} ${id}  ${due}  ${title}"
+            else
+                echo -e "  ${priority_color} ${id}  ${title}"
+            fi
+        done
+    else
+        echo -e "${RED}Error: $response${NC}"
+    fi
+}
+
+function list_projects() {
+    local response
+    response=$(api_call GET "/api/projects")
+
+    if echo "$response" | jq -e 'type == "array"' > /dev/null 2>&1; then
+        local count
+        count=$(echo "$response" | jq 'length')
+
+        if [[ "$count" == "0" ]]; then
+            echo -e "${YELLOW}No projects yet.${NC}"
+            echo "Create one with: todo project add \"Project Name\""
+            return
+        fi
+
+        echo -e "${BLUE}Projects:${NC}"
+        echo ""
+        echo "$response" | jq -r '.[] | "\(.id | split("-")[0])\t\(.title)\t\(.description // "")"' | while IFS=$'\t' read -r id title desc; do
+            if [[ -n "$desc" ]]; then
+                echo -e "  📁 ${id}  ${title} - ${desc}"
+            else
+                echo -e "  📁 ${id}  ${title}"
+            fi
+        done
+    else
+        echo -e "${RED}Error: $response${NC}"
+    fi
+}
+
+function add_project() {
+    local title="$1"
+
+    if [[ -z "$title" ]]; then
+        echo -e "${RED}Error: Title is required${NC}"
+        echo "Usage: todo project add \"Project Name\""
+        exit 1
+    fi
+
+    local response
+    local json_body
+    json_body=$(jq -n --arg title "$title" '{title: $title}')
+    response=$(api_call POST "/api/projects" "$json_body")
+
+    if echo "$response" | jq -e '.id' > /dev/null 2>&1; then
+        local id
+        id=$(echo "$response" | jq -r '.id | split("-")[0]')
+        echo -e "${GREEN}Created project:${NC} $title (${id})"
+    else
+        echo -e "${RED}Error: $response${NC}"
+    fi
+}
+
+function show_project() {
+    local query="$1"
+
+    if [[ -z "$query" ]]; then
+        echo -e "${RED}Error: Project name or ID is required${NC}"
+        echo "Usage: todo project show <name-or-id>"
+        exit 1
+    fi
+
+    # Find the full ID (by prefix or title)
+    local full_id
+    full_id=$(find_project_id "$query")
+
+    if [[ -z "$full_id" ]]; then
+        echo -e "${RED}Error: No project found matching '$query'${NC}"
+        exit 1
+    fi
+
+    local response
+    response=$(api_call GET "/api/projects/${full_id}")
+
+    if echo "$response" | jq -e '.id' > /dev/null 2>&1; then
+        local title desc
+        title=$(echo "$response" | jq -r '.title')
+        desc=$(echo "$response" | jq -r '.description // ""')
+
+        echo -e "${BLUE}📁 $title${NC}"
+        if [[ -n "$desc" ]]; then
+            echo -e "   ${desc}"
+        fi
+        echo ""
+
+        local todo_count
+        todo_count=$(echo "$response" | jq '.todos | length')
+
+        if [[ "$todo_count" == "0" ]]; then
+            echo -e "   ${YELLOW}No todos in this project${NC}"
+        else
+            echo -e "   ${GREEN}Todos:${NC}"
+            echo "$response" | jq -r '.todos[] | "   ○ \(.id | split("-")[0])  \(.title)"'
+        fi
+    else
+        echo -e "${RED}Error: $response${NC}"
+    fi
+}
+
+function delete_project() {
+    local query="$1"
+
+    if [[ -z "$query" ]]; then
+        echo -e "${RED}Error: Project name or ID is required${NC}"
+        echo "Usage: todo project delete <name-or-id>"
+        exit 1
+    fi
+
+    # Find the full ID (by prefix or title)
+    local full_id
+    full_id=$(find_project_id "$query")
+
+    if [[ -z "$full_id" ]]; then
+        echo -e "${RED}Error: No project found matching '$query'${NC}"
+        exit 1
+    fi
+
+    local response
+    response=$(api_call DELETE "/api/projects/${full_id}")
+
+    if echo "$response" | jq -e '.id' > /dev/null 2>&1; then
+        local title
+        title=$(echo "$response" | jq -r '.title')
+        echo -e "${RED}Deleted project:${NC} $title"
+    else
+        echo -e "${RED}Error: $response${NC}"
+    fi
+}
+
+function project_add_todo() {
+    local project_query="$1"
+    local todo_query="$2"
+
+    if [[ -z "$project_query" || -z "$todo_query" ]]; then
+        echo -e "${RED}Error: Project and Todo are required${NC}"
+        echo "Usage: todo project add-todo <project-name-or-id> <todo-title-or-id>"
+        exit 1
+    fi
+
+    # Find the full project ID (by ID prefix or title)
+    local project_id
+    project_id=$(find_project_id "$project_query")
+
+    if [[ -z "$project_id" ]]; then
+        echo -e "${RED}Error: No project found matching '$project_query'${NC}"
+        exit 1
+    fi
+
+    # Find the full todo ID (by ID prefix or title)
+    local todo_id
+    todo_id=$(find_todo_id "$todo_query")
+
+    if [[ -z "$todo_id" ]]; then
+        echo -e "${RED}Error: No todo found matching '$todo_query'${NC}"
+        exit 1
+    fi
+
+    local response
+    response=$(api_call POST "/api/projects/${project_id}/todos/${todo_id}" "{}")
+
+    if echo "$response" | jq -e '.id' > /dev/null 2>&1; then
+        local project_title
+        project_title=$(echo "$response" | jq -r '.title')
+        echo -e "${GREEN}Added todo to project:${NC} $project_title"
+    else
+        echo -e "${RED}Error: $response${NC}"
+    fi
+}
+
+function project_remove_todo() {
+    local project_query="$1"
+    local todo_query="$2"
+
+    if [[ -z "$project_query" || -z "$todo_query" ]]; then
+        echo -e "${RED}Error: Project and Todo are required${NC}"
+        echo "Usage: todo project remove-todo <project-name-or-id> <todo-title-or-id>"
+        exit 1
+    fi
+
+    # Find the full project ID (by ID prefix or title)
+    local project_id
+    project_id=$(find_project_id "$project_query")
+
+    if [[ -z "$project_id" ]]; then
+        echo -e "${RED}Error: No project found matching '$project_query'${NC}"
+        exit 1
+    fi
+
+    # Find the full todo ID (by ID prefix or title)
+    local todo_id
+    todo_id=$(find_todo_id "$todo_query")
+
+    if [[ -z "$todo_id" ]]; then
+        echo -e "${RED}Error: No todo found matching '$todo_query'${NC}"
+        exit 1
+    fi
+
+    local response
+    response=$(api_call DELETE "/api/projects/${project_id}/todos/${todo_id}" "{}")
+
+    if echo "$response" | jq -e '.id' > /dev/null 2>&1; then
+        local project_title
+        project_title=$(echo "$response" | jq -r '.title')
+        echo -e "${YELLOW}Removed todo from project:${NC} $project_title"
+    else
+        echo -e "${RED}Error: $response${NC}"
+    fi
+}
+
+function handle_project_command() {
+    local subcmd="$1"
+    shift
+
+    case "$subcmd" in
+        list|ls)
+            list_projects
+            ;;
+        add)
+            add_project "$*"
+            ;;
+        show)
+            show_project "$1"
+            ;;
+        delete|rm)
+            delete_project "$1"
+            ;;
+        add-todo)
+            project_add_todo "$1" "$2"
+            ;;
+        remove-todo)
+            project_remove_todo "$1" "$2"
+            ;;
+        "")
+            list_projects
+            ;;
+        *)
+            echo -e "${RED}Unknown project command: $subcmd${NC}"
+            echo "Try: todo project list, todo project add, todo project show"
+            exit 1
+            ;;
+    esac
+}
+
+# Main
+case "${1:-}" in
+    add)
+        shift
+        add_todo "$*"
+        ;;
+    list|ls)
+        shift
+        if [[ "$1" == "-a" || "$1" == "--all" || "$1" == "--show-completed" ]]; then
+            list_todos "true"
+        else
+            list_todos "false"
+        fi
+        ;;
+    inbox)
+        list_inbox
+        ;;
+    show)
+        show_todo "$2"
+        ;;
+    subtask)
+        shift
+        add_subtask "$@"
+        ;;
+    complete|done)
+        complete_todo "$2"
+        ;;
+    delete|rm)
+        delete_todo "$2"
+        ;;
+    project)
+        shift
+        handle_project_command "$@"
+        ;;
+    help|--help|-h)
+        usage
+        ;;
+    "")
+        list_todos
+        ;;
+    *)
+        # If no command recognized, treat as quick add
+        add_todo "$*"
+        ;;
+esac
