@@ -7,8 +7,8 @@
 #   todo complete <id>
 #   todo delete <id>
 
-API_URL="${TODO_API_URL:-https://taskleef.com}"
-API_KEY="${TODO_API_KEY}"
+API_URL="${TASKLEEF_API_URL:-https://taskleef.com}"
+API_KEY="${TASKLEEF_API_KEY}"
 
 # Colors
 RED='\033[0;31m'
@@ -31,15 +31,15 @@ function load_auth_file() {
         exit 1
     fi
 
-    # Source the file to get TODO_API_KEY
+    # Source the file to get TASKLEEF_API_KEY
     source "$auth_file"
 
-    if [[ -z "$TODO_API_KEY" ]]; then
-        echo -e "${RED}Error: TODO_API_KEY not set in auth file${NC}" >&2
+    if [[ -z "$TASKLEEF_API_KEY" ]]; then
+        echo -e "${RED}Error: TASKLEEF_API_KEY not set in auth file${NC}" >&2
         exit 1
     fi
 
-    API_KEY="$TODO_API_KEY"
+    API_KEY="$TASKLEEF_API_KEY"
 }
 
 # Parse global flags (--auth-file / -a) before commands
@@ -70,12 +70,12 @@ fi
 
 # Check API key is set
 if [[ -z "$API_KEY" ]]; then
-    echo -e "${RED}Error: TODO_API_KEY environment variable not set${NC}"
+    echo -e "${RED}Error: TASKLEEF_API_KEY environment variable not set${NC}"
     echo "Generate an API key at $API_URL and set:"
-    echo "  export TODO_API_KEY=your-api-key"
+    echo "  export TASKLEEF_API_KEY=your-api-key"
     echo ""
     echo "Or use --auth-file to specify an auth file:"
-    echo "  todo --auth-file ~/.todo.claude.auth <command>"
+    echo "  todo --auth-file ~/.taskleef.auth <command>"
     exit 1
 fi
 

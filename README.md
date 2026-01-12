@@ -46,25 +46,25 @@ sudo cp taskleef/todo /usr/local/bin/
 ### Option 1: Environment Variable
 
 1. Go to [taskleef.com](https://taskleef.com) and generate an API key
-2. Set the `TODO_API_KEY` environment variable:
+2. Set the `TASKLEEF_API_KEY` environment variable:
 
 ```bash
-export TODO_API_KEY=your-api-key-here
+export TASKLEEF_API_KEY=your-api-key-here
 ```
 
 Add this to your `~/.bashrc` or `~/.zshrc` to make it permanent.
 
 ### Option 2: Auth File
 
-Create an auth file (e.g., `~/.todo.auth`) containing:
+Create an auth file (e.g., `~/.taskleef.auth`) containing:
 ```bash
-TODO_API_KEY=your-api-key-here
+TASKLEEF_API_KEY=your-api-key-here
 ```
 
 Then use the `--auth-file` flag:
 ```bash
-todo --auth-file ~/.todo.auth list
-todo -a ~/.todo.auth list
+todo --auth-file ~/.taskleef.auth list
+todo -a ~/.taskleef.auth list
 ```
 
 This is useful for managing multiple accounts or keeping credentials separate.
@@ -73,7 +73,14 @@ This is useful for managing multiple accounts or keeping credentials separate.
 
 If you're running your own Taskleef server, set:
 ```bash
-export TODO_API_URL=https://your-server.com
+export TASKLEEF_API_URL=https://your-server.com
+```
+
+### Optional: Command Alias
+
+If you prefer using `tl` instead of `todo`, add this alias to your `~/.bashrc` or `~/.zshrc`:
+```bash
+alias tl=todo
 ```
 
 ## Tab Completion
