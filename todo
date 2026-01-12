@@ -7,7 +7,7 @@
 #   todo complete <id>
 #   todo delete <id>
 
-API_URL="${TODO_API_URL:-https://todo.extroverteddeveloper.com}"
+API_URL="${TODO_API_URL:-https://taskleef.com}"
 API_KEY="${TODO_API_KEY}"
 
 # Colors

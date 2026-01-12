@@ -1,6 +1,6 @@
 # Taskleef CLI
 
-A command-line interface for managing todos with the [Taskleef](https://todo.extroverteddeveloper.com) todo app.
+A command-line interface for managing todos with the [Taskleef](https://taskleef.com) todo app.
 
 ## Prerequisites
 
@@ -45,7 +45,7 @@ sudo cp taskleef/todo /usr/local/bin/
 
 ### Option 1: Environment Variable
 
-1. Go to [todo.extroverteddeveloper.com](https://todo.extroverteddeveloper.com) and generate an API key
+1. Go to [taskleef.com](https://taskleef.com) and generate an API key
 2. Set the `TODO_API_KEY` environment variable:
 
 ```bash
