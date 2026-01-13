@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Todo CLI - Simple command line interface for todo.extroverteddeveloper.com
+# Todo CLI - Simple command line interface for taskleef.com
 # Usage:
 #   todo add "Buy milk"
 #   todo list
@@ -15,6 +15,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 DIM='\033[2m'
 STRIKE='\033[9m'
 NC='\033[0m' # No Color
@@ -130,7 +131,7 @@ function usage() {
     echo ""
     echo "Environment:"
     echo "  TODO_API_KEY      Your API key (required unless using --auth-file)"
-    echo "  TODO_API_URL      API URL (default: https://todo.extroverteddeveloper.com)"
+    echo "  TODO_API_URL      API URL (default: https://taskleef.com)"
 }
 
 function api_call() {
@@ -553,6 +554,16 @@ function show_todo() {
         if [[ "$subtask_count" -gt 0 ]]; then
             echo -e "   ${GREEN}Subtasks:${NC}"
             echo "$response" | jq -r '.subtasks[] | "   ○ \(.id | split("-")[0])  \(.title)"'
+        fi
+
+        # Show tags
+        local tag_count
+        tag_count=$(echo "$response" | jq '.tags | length')
+
+        if [[ "$tag_count" -gt 0 ]]; then
+            echo ""
+            echo -n "Tags: "
+            echo "$response" | jq -r '.tags | map("[" + .name + "]") | join(" ")'
         fi
     else
         echo -e "${RED}Error: $response${NC}"
